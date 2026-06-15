@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>REACH Antigen Dashboard</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { margin: 0; height: 100%; font-family: Arial, sans-serif; }
+    #map { height: 100vh; width: 100%; }
+
+    .side-panel, .chart-panel, .bottom-panel {
+      position: absolute; background: white; z-index: 1000;
+      padding: 14px; border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0,0,0,0.25);
+    }
+
+    .side-panel { top: 15px; left: 15px; width: 330px; }
+    .chart-panel { top: 15px; right: 15px; width: 400px; display: none; }
+    .bottom-panel { bottom: 20px; left: 380px; right: 30px; }
+
+    h2, h3 { margin-top: 0; }
+
+    label { font-size: 13px; font-weight: bold; display: block; margin-top: 8px; }
+
+    select, input[type="range"] {
+      width: 100%;
+      margin-top: 5px;
+      margin-bottom: 10px;
+    }
+
+    .button-row { display: flex; gap: 5px; margin: 10px 0; }
+
+    .button-row button {
+      flex: 1; padding: 6px; border: 1px solid #aaa;
+      background: #f2f2f2; cursor: pointer; border-radius: 5px;
+      font-size: 12px;
+    }
+
+    .button-row button.active { background: #333; color: white; }
+
+    .gradient {
+      height: 14px;
+      background: linear-gradient(to right, #bd0026, #f03b20, #fd8d3c, #fecc5c, #78c679, #31a354, #006837);
+      border-radius: 8px;
+    }
+
+    .legend-row { display: flex; justify-content: space-between; font-size: 12px; }
+
+    .loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      z-index: 2000;
+      transform: translate(-50%, -50%);
+      background: white;
+      padding: 18px 24px;
+      border-radius: 10px;
+      box-shadow: 0 0 12px rgba(0,0,0,0.25);
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+
+<div id="map"></div>
+<div class="loading" id="loadingBox">Loading dashboard...</div>
+
+<div class="side-panel">
+  <h2>REACH Antigen Performance</h2>
+
+  <label>Administrative Level</label>
+  <div class="button-row">
+    <button id="btnAdm0">ADM0</button>
+    <button id="btnAdm1">Adm1</button>
+    <button id="btnFocus" class="active">Focus Area</button>
+  </div>
+
+  <label>Vaccine / Antigen</label>
+  <select id="vaccineSelect"></select>
+
+  <label>Country</label>
+  <select id="countrySelect">
+    <option value="All">All Countries</option>
+  </select>
+
+  <label>Admin 1</label>
+  <select id="admin1Select">
+    <option value="All">All Admin 1</option>
+  </select>
+
+  <label>Admin 2</label>
+  <select id="admin2Select">
+    <option value="All">All Admin 2</option>
+  </select>
+
+  <label>Focus Area</label>
+  <select id="focusSelect">
+    <option value="All">All Focus Areas</option>
+  </select>
+</div>
+
+<div class="chart-panel" id="chartPanel">
+  <h3 id="chartTitle">Cumulative Trend</h3>
+  <canvas id="trendChart"></canvas>
+</div>
+
+<div class="bottom-panel">
+  <label>Year</label>
+  <select id="yearSelect"></select>
+
+  <div id="dateLabel"><b>Month:</b> Loading...</div>
+  <input type="range" id="monthSlider" min="0" max="11" step="1" value="0">
+
+  <div id="progressLabel"><b>Minimum progress shown:</b> 0%</div>
+  <input type="range" id="progressSlider" min="0" max="100" step="5" value="0">
+
+  <div class="legend-row">
+    <span>Low cumulative progress</span>
+    <span>High cumulative progress</span>
+  </div>
+  <div class="gradient"></div>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+const map = L.map('map').setView([8, 25], 5);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+let adm0Data, adm1Data, focusBoundaryData;
+let doseRows = [];
+let activeLayer, adm0Outline, adm1Outline, chart;
+let currentLevel = 'focus';
+
+const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+
+const vaccineSelect = document.getElementById('vaccineSelect');
+const yearSelect = document.getElementById('yearSelect');
+const monthSlider = document.getElementById('monthSlider');
+const progressSlider = document.getElementById('progressSlider');
+const dateLabel = document.getElementById('dateLabel');
+const progressLabel = document.getElementById('progressLabel');
+
+const countrySelect = document.getElementById('countrySelect');
+const admin1Select = document.getElementById('admin1Select');
+const admin2Select = document.getElementById('admin2Select');
+const focusSelect = document.getElementById('focusSelect');
+
+function getID(p) {
+  return String(p.ID ?? p.id ?? p.Id);
+}
+
+function parseDate(d) {
+  return new Date(d);
+}
+
+function shortDate(d) {
+  const dt = parseDate(d);
+  return months[dt.getMonth()] + String(dt.getFullYear()).slice(2);
+}
+
+function selectedVaccine() {
+  return vaccineSelect.value;
+}
+
+function doseValue(r) {
+  return Number(r.Doses || r.Value || r.value || 0);
+}
+
+function selectedDate() {
+  const year = Number(yearSelect.value);
+  const month = Number(monthSlider.value);
+
+  const dates = doseRows
+    .filter(r => r['Vaccine Type'] === selectedVaccine())
+    .map(r => r.real_date)
+    .filter(d => {
+      const dt = parseDate(d);
+      return dt.getFullYear() === year && dt.getMonth() === month;
+    })
+    .sort();
+
+  return dates[0];
+}
+
+function getColorByProgress(progress) {
+  return progress >= 0.85 ? '#006837' :
+         progress >= 0.65 ? '#31a354' :
+         progress >= 0.45 ? '#78c679' :
+         progress >= 0.30 ? '#fecc5c' :
+         progress >= 0.15 ? '#fd8d3c' :
+         progress >  0    ? '#f03b20' :
+                             '#bd0026';
+}
+
+function nameFromProps(p, options) {
+  for (const key of options) {
+    if (p[key]) return p[key];
+  }
+  return null;
+}
+
+function cumulativeForFocus(id, vaccine, date) {
+  return doseRows
+    .filter(r =>
+      String(r.ID || r.id) === String(id) &&
+      r['Vaccine Type'] === vaccine &&
+      parseDate(r.real_date) <= parseDate(date)
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function finalForFocus(id, vaccine) {
+  return doseRows
+    .filter(r =>
+      String(r.ID || r.id) === String(id) &&
+      r['Vaccine Type'] === vaccine
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function cumulativeForCountry(country, vaccine, date) {
+  return doseRows
+    .filter(r =>
+      r.Country === country &&
+      r['Vaccine Type'] === vaccine &&
+      parseDate(r.real_date) <= parseDate(date)
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function finalForCountry(country, vaccine) {
+  return doseRows
+    .filter(r =>
+      r.Country === country &&
+      r['Vaccine Type'] === vaccine
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function cumulativeForAdmin1(country, Adm1, vaccine, date) {
+  return doseRows
+    .filter(r =>
+      r.Country === country &&
+      r.Adm1 === Adm1 &&
+      r['Vaccine Type'] === vaccine &&
+      parseDate(r.real_date) <= parseDate(date)
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function finalForAdmin1(country, Adm1, vaccine) {
+  return doseRows
+    .filter(r =>
+      r.Country === country &&
+      r.Adm1 === Adm1 &&
+      r['Vaccine Type'] === vaccine
+    )
+    .reduce((sum, r) => sum + doseValue(r), 0);
+}
+
+function clearActiveLayer() {
+  if (activeLayer) map.removeLayer(activeLayer);
+}
+
+function drawOutlines() {
+  if (adm0Outline) map.removeLayer(adm0Outline);
+  if (adm1Outline) map.removeLayer(adm1Outline);
+
+  adm1Outline = L.geoJSON(adm1Data, {
+    interactive: false,
+    style: {
+      color: '#999999',
+      weight: 0.8,
+      fillColor: '#d9d9d9',
+      fillOpacity: 0.35
+    }
+  }).addTo(map);
+
+  adm0Outline = L.geoJSON(adm0Data, {
+    interactive: false,
+    style: {
+      color: '#222222',
+      weight: 1.8,
+      fillColor: '#ffffff',
+      fillOpacity: 0
+    }
+  }).addTo(map);
+
+  adm1Outline.bringToFront();
+  adm0Outline.bringToFront();
+
+  if (activeLayer) {
+    activeLayer.bringToFront();
+  }
+
+  adm1Outline.bringToFront();
+  adm0Outline.bringToFront();
+}
+
+function filteredFocusFeatures(date) {
+  const minProgress = Number(progressSlider.value) / 100;
+  const vaccine = selectedVaccine();
+
+  return focusBoundaryData.features.filter(feature => {
+    const p = feature.properties;
+    const id = getID(p);
+    const cumulative = cumulativeForFocus(id, vaccine, date);
+    const finalTotal = finalForFocus(id, vaccine);
+    const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
+
+    const matchingRecord = doseRows.find(r => String(r.ID || r.id) === String(id));
+
+    if (!matchingRecord) return false;
+
+    return progress >= minProgress &&
+      (countrySelect.value === 'All' || matchingRecord.Country === countrySelect.value) &&
+      (admin1Select.value === 'All' || matchingRecord.Adm1 === admin1Select.value) &&
+      (admin2Select.value === 'All' || matchingRecord.Adm2 === admin2Select.value) &&
+      (focusSelect.value === 'All' || matchingRecord['Focus Area'] === focusSelect.value);
+  });
+}
+
+function updateMap() {
+  clearActiveLayer();
+
+  const date = selectedDate();
+  const vaccine = selectedVaccine();
+  const minProgress = Number(progressSlider.value) / 100;
+
+  if (!date || !vaccine) {
+    dateLabel.innerHTML = '<b>Month:</b> No data';
+    return;
+  }
+
+  dateLabel.innerHTML = '<b>Month:</b> ' + shortDate(date);
+  progressLabel.innerHTML = '<b>Minimum progress shown:</b> ' + progressSlider.value + '%';
+
+  if (currentLevel === 'adm0') {
+    activeLayer = L.geoJSON(adm0Data, {
+      style: feature => {
+        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+        const cumulative = cumulativeForCountry(countryName, vaccine, date);
+        const finalTotal = finalForCountry(countryName, vaccine);
+        const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
+
+        return {
+          fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
+          color: '#777',
+          weight: 0.65,
+          fillOpacity: progress >= minProgress ? 0.72 : 0.08
+        };
+      },
+
+      onEachFeature: (feature, layer) => {
+        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+
+        layer.on('mouseover', function () {
+          const cumulative = cumulativeForCountry(countryName, vaccine, date);
+          const finalTotal = finalForCountry(countryName, vaccine);
+          const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
+
+          layer.bindPopup(
+            `<b>${countryName}</b><br>
+            Level: ADM0<br>
+            Antigen: ${vaccine}<br>
+            Cumulative doses: ${cumulative}<br>
+            Progress: ${progress}%<br>
+            Month: ${shortDate(date)}`
+          ).openPopup();
+
+          this.setStyle({ weight: 1.5, color: '#111' });
+        });
+
+        layer.on('mouseout', function () {
+          this.closePopup();
+          activeLayer.resetStyle(this);
+        });
+
+        layer.on('click', function () {
+          drawCountryChart(countryName, vaccine);
+        });
+      }
+    }).addTo(map);
+
+    drawOutlines();
+    activeLayer.bringToFront();
+    return;
+  }
+
+  if (currentLevel === 'Adm1') {
+    activeLayer = L.geoJSON(adm1Data, {
+      style: feature => {
+        const admin1Name = nameFromProps(feature.properties, ['Adm1','Admin1','Adm1_NAME','NAME_1']);
+        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+        const cumulative = cumulativeForAdmin1(countryName, admin1Name, vaccine, date);
+        const finalTotal = finalForAdmin1(countryName, admin1Name, vaccine);
+        const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
+
+        return {
+          fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
+          color: '#777',
+          weight: 0.45,
+          fillOpacity: progress >= minProgress ? 0.72 : 0.08
+        };
+      },
+
+      onEachFeature: (feature, layer) => {
+        const admin1Name = nameFromProps(feature.properties, ['Adm1','Admin1','Adm1_NAME','NAME_1']);
+        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+
+        layer.on('mouseover', function () {
+          const cumulative = cumulativeForAdmin1(countryName, admin1Name, vaccine, date);
+          const finalTotal = finalForAdmin1(countryName, admin1Name, vaccine);
+          const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
+
+          layer.bindPopup(
+            `<b>${admin1Name}</b><br>
+            Level: Adm1<br>
+            Country: ${countryName}<br>
+            Antigen: ${vaccine}<br>
+            Cumulative doses: ${cumulative}<br>
+            Progress: ${progress}%<br>
+            Month: ${shortDate(date)}`
+          ).openPopup();
+
+          this.setStyle({ weight: 1.3, color: '#111' });
+        });
+
+        layer.on('mouseout', function () {
+          this.closePopup();
+          activeLayer.resetStyle(this);
+        });
+
+        layer.on('click', function () {
+          drawAdmin1Chart(countryName, admin1Name, vaccine);
+        });
+      }
+    }).addTo(map);
+
+    drawOutlines();
+    activeLayer.bringToFront();
+    return;
+  }
+
+  activeLayer = L.geoJSON(filteredFocusFeatures(date), {
+    style: feature => {
+      const p = feature.properties;
+      const id = getID(p);
+      const cumulative = cumulativeForFocus(id, vaccine, date);
+      const finalTotal = finalForFocus(id, vaccine);
+      const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
+
+      return {
+        fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
+        color: 'white',
+        weight: 0.45,
+        fillOpacity: progress >= minProgress ? 0.76 : 0.08
+      };
+    },
+
+    onEachFeature: (feature, layer) => {
+      const p = feature.properties;
+      const id = getID(p);
+
+      const matchingRecord = doseRows.find(r => String(r.ID || r.id) === String(id));
+
+      layer.on('mouseover', function () {
+        const cumulative = cumulativeForFocus(id, vaccine, date);
+        const finalTotal = finalForFocus(id, vaccine);
+        const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
+
+        layer.bindPopup(
+          `<b>${matchingRecord?.['Focus Area'] || p['Focus Area'] || p.Focus_Area || 'Focus Area'}</b><br>
+          Level: Focus Area<br>
+          Country: ${matchingRecord?.Country || ''}<br>
+          Admin1: ${matchingRecord?.Adm1 || ''}<br>
+          Admin2: ${matchingRecord?.Adm2 || ''}<br>
+          Antigen: ${vaccine}<br>
+          Cumulative doses: ${cumulative}<br>
+          Progress: ${progress}%<br>
+          Month: ${shortDate(date)}`
+        ).openPopup();
+
+        this.setStyle({ weight: 1.5, color: '#111' });
+      });
+
+      layer.on('mouseout', function () {
+        this.closePopup();
+        activeLayer.resetStyle(this);
+      });
+
+      layer.on('click', function () {
+        drawFocusChart(id, matchingRecord?.['Focus Area'] || p['Focus Area'] || 'Focus Area', vaccine);
+      });
+    }
+  }).addTo(map);
+
+  drawOutlines();
+  activeLayer.bringToFront();
+}
+
+function populateDropdowns() {
+  vaccineSelect.innerHTML = '';
+
+  [...new Set(doseRows.map(r => r['Vaccine Type']))]
+    .filter(Boolean)
+    .sort()
+    .forEach(v => vaccineSelect.innerHTML += `<option value="${v}">${v}</option>`);
+
+  [...new Set(doseRows.map(r => r.Country))]
+    .filter(Boolean)
+    .sort()
+    .forEach(c => countrySelect.innerHTML += `<option value="${c}">${c}</option>`);
+
+  updateAdmin1Dropdown();
+  updateAdmin2Dropdown();
+  updateFocusDropdown();
+
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+
+  years.forEach(y => yearSelect.innerHTML += `<option value="${y}">${y}</option>`);
+  yearSelect.value = years[0];
+}
+
+function updateAdmin1Dropdown() {
+  admin1Select.innerHTML = '<option value="All">All Admin 1</option>';
+
+  doseRows
+    .filter(r => countrySelect.value === 'All' || r.Country === countrySelect.value)
+    .map(r => r.Adm1)
+    .filter((v, i, a) => v && a.indexOf(v) === i)
+    .sort()
+    .forEach(a => admin1Select.innerHTML += `<option value="${a}">${a}</option>`);
+}
+
+function updateAdmin2Dropdown() {
+  admin2Select.innerHTML = '<option value="All">All Admin 2</option>';
+
+  doseRows
+    .filter(r =>
+      (countrySelect.value === 'All' || r.Country === countrySelect.value) &&
+      (admin1Select.value === 'All' || r.Adm1 === admin1Select.value)
+    )
+    .map(r => r.Adm2)
+    .filter((v, i, a) => v && a.indexOf(v) === i)
+    .sort()
+    .forEach(a => admin2Select.innerHTML += `<option value="${a}">${a}</option>`);
+}
+
+function updateFocusDropdown() {
+  focusSelect.innerHTML = '<option value="All">All Focus Areas</option>';
+
+  doseRows
+    .filter(r =>
+      (countrySelect.value === 'All' || r.Country === countrySelect.value) &&
+      (admin1Select.value === 'All' || r.Adm1 === admin1Select.value) &&
+      (admin2Select.value === 'All' || r.Adm2 === admin2Select.value)
+    )
+    .map(r => r['Focus Area'])
+    .filter((v, i, a) => v && a.indexOf(v) === i)
+    .sort()
+    .forEach(fa => focusSelect.innerHTML += `<option value="${fa}">${fa}</option>`);
+}
+
+function yearlyFocusValues(id, vaccine) {
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+
+  return years.map(year => {
+    const endDate = new Date(year, 11, 31);
+
+    const total = doseRows
+      .filter(r =>
+        String(r.ID || r.id) === String(id) &&
+        r['Vaccine Type'] === vaccine &&
+        parseDate(r.real_date) <= endDate
+      )
+      .reduce((sum, r) => sum + doseValue(r), 0);
+
+    return { year, total };
+  });
+}
+
+function yearlyCountryValues(country, vaccine) {
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+
+  return years.map(year => {
+    const endDate = new Date(year, 11, 31);
+    return { year, total: cumulativeForCountry(country, vaccine, endDate) };
+  });
+}
+
+function yearlyAdmin1Values(country, Adm1, vaccine) {
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+
+  return years.map(year => {
+    const endDate = new Date(year, 11, 31);
+    return { year, total: cumulativeForAdmin1(country, Adm1, vaccine, endDate) };
+  });
+}
+
+function drawFocusChart(id, name, vaccine) {
+  const values = yearlyFocusValues(id, vaccine);
+  drawChart(name + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
+}
+
+function drawCountryChart(country, vaccine) {
+  const values = yearlyCountryValues(country, vaccine);
+  drawChart(country + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
+}
+
+function drawAdmin1Chart(country, Adm1, vaccine) {
+  const values = yearlyAdmin1Values(country, Adm1, vaccine);
+  drawChart(Adm1 + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
+}
+
+function drawChart(title, labels, values) {
+  document.getElementById('chartPanel').style.display = 'block';
+  document.getElementById('chartTitle').textContent = title;
+
+  if (chart) chart.destroy();
+
+  chart = new Chart(document.getElementById('trendChart'), {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        data: values,
+        borderWidth: 2,
+        tension: 0.25,
+        pointRadius: 4,
+        fill: false
+      }]
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { title: { display: true, text: 'Year' } },
+        y: { beginAtZero: true, title: { display: true, text: 'Cumulative doses' } }
+      }
+    }
+  });
+}
+
+function setLevel(level) {
+  currentLevel = level;
+
+  document.querySelectorAll('.button-row button').forEach(b => b.classList.remove('active'));
+
+  if (level === 'adm0') document.getElementById('btnAdm0').classList.add('active');
+  if (level === 'Adm1') document.getElementById('btnAdm1').classList.add('active');
+  if (level === 'focus') document.getElementById('btnFocus').classList.add('active');
+
+  progressSlider.value = 0;
+  updateMap();
+}
+
+document.getElementById('btnAdm0').onclick = () => setLevel('adm0');
+document.getElementById('btnAdm1').onclick = () => setLevel('Adm1');
+document.getElementById('btnFocus').onclick = () => setLevel('focus');
+
+vaccineSelect.onchange = () => {
+  progressSlider.value = 0;
+  updateMap();
+};
+
+yearSelect.onchange = () => {
+  progressSlider.value = 0;
+  updateMap();
+};
+
+monthSlider.oninput = () => {
+  progressSlider.value = 0;
+  updateMap();
+};
+
+progressSlider.oninput = updateMap;
+
+countrySelect.onchange = () => {
+  updateAdmin1Dropdown();
+  updateAdmin2Dropdown();
+  updateFocusDropdown();
+  progressSlider.value = 0;
+  updateMap();
+};
+
+admin1Select.onchange = () => {
+  updateAdmin2Dropdown();
+  updateFocusDropdown();
+  progressSlider.value = 0;
+  updateMap();
+};
+
+admin2Select.onchange = () => {
+  updateFocusDropdown();
+  progressSlider.value = 0;
+  updateMap();
+};
+
+focusSelect.onchange = () => {
+  progressSlider.value = 0;
+  updateMap();
+};
+
+Promise.all([
+  fetch('Adm0.geojson').then(r => r.json()),
+  fetch('Adm1.geojson').then(r => r.json()),
+  fetch('FocusArea.geojson').then(r => r.json()),
+  fetch('all_doses_long.csv').then(r => r.text())
+]).then(([adm0, Adm1, focusBoundaries, csvText]) => {
+  adm0Data = adm0;
+  adm1Data = Adm1;
+  focusBoundaryData = focusBoundaries;
+
+  doseRows = Papa.parse(csvText, {
+    header: true,
+    dynamicTyping: true,
+    skipEmptyLines: true
+  }).data;
+
+  populateDropdowns();
+  drawOutlines();
+  updateMap();
+
+  document.getElementById('loadingBox').style.display = 'none';
+}).catch(error => {
+  console.error(error);
+  document.getElementById('loadingBox').innerHTML =
+    'Error loading files. Check file names and extensions.';
+});
+</script>
+
+</body>
+</html>
