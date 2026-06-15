@@ -2,7 +2,7 @@
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>REACH Antigen Dashboard</title>
+  <title>GAVI REACH Performance Webmap</title>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -13,8 +13,11 @@
     #map { height: 100vh; width: 100%; }
 
     .side-panel, .chart-panel, .bottom-panel {
-      position: absolute; background: white; z-index: 1000;
-      padding: 14px; border-radius: 10px;
+      position: absolute;
+      background: white;
+      z-index: 1000;
+      padding: 14px;
+      border-radius: 10px;
       box-shadow: 0 0 10px rgba(0,0,0,0.25);
     }
 
@@ -24,7 +27,12 @@
 
     h2, h3 { margin-top: 0; }
 
-    label { font-size: 13px; font-weight: bold; display: block; margin-top: 8px; }
+    label {
+      font-size: 13px;
+      font-weight: bold;
+      display: block;
+      margin-top: 8px;
+    }
 
     select, input[type="range"] {
       width: 100%;
@@ -32,15 +40,26 @@
       margin-bottom: 10px;
     }
 
-    .button-row { display: flex; gap: 5px; margin: 10px 0; }
+    .button-row {
+      display: flex;
+      gap: 5px;
+      margin: 10px 0;
+    }
 
     .button-row button {
-      flex: 1; padding: 6px; border: 1px solid #aaa;
-      background: #f2f2f2; cursor: pointer; border-radius: 5px;
+      flex: 1;
+      padding: 6px;
+      border: 1px solid #aaa;
+      background: #f2f2f2;
+      cursor: pointer;
+      border-radius: 5px;
       font-size: 12px;
     }
 
-    .button-row button.active { background: #333; color: white; }
+    .button-row button.active {
+      background: #333;
+      color: white;
+    }
 
     .gradient {
       height: 14px;
@@ -48,7 +67,11 @@
       border-radius: 8px;
     }
 
-    .legend-row { display: flex; justify-content: space-between; font-size: 12px; }
+    .legend-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+    }
 
     .loading {
       position: absolute;
@@ -71,12 +94,12 @@
 <div class="loading" id="loadingBox">Loading dashboard...</div>
 
 <div class="side-panel">
-  <h2>REACH Antigen Performance</h2>
+  <h2>GAVI REACH Performance Webmap</h2>
 
   <label>Administrative Level</label>
   <div class="button-row">
     <button id="btnAdm0">ADM0</button>
-    <button id="btnAdm1">Adm1</button>
+    <button id="btnAdm1">ADM1</button>
     <button id="btnFocus" class="active">Focus Area</button>
   </div>
 
@@ -116,12 +139,12 @@
   <div id="dateLabel"><b>Month:</b> Loading...</div>
   <input type="range" id="monthSlider" min="0" max="11" step="1" value="0">
 
-  <div id="progressLabel"><b>Minimum progress shown:</b> 0%</div>
-  <input type="range" id="progressSlider" min="0" max="100" step="5" value="0">
+  <div id="doseLabel"><b>Minimum cumulative doses shown:</b> 0</div>
+  <input type="range" id="doseSlider" min="0" max="0" step="100" value="0">
 
   <div class="legend-row">
-    <span>Low cumulative progress</span>
-    <span>High cumulative progress</span>
+    <span>Low cumulative doses</span>
+    <span>High cumulative doses</span>
   </div>
   <div class="gradient"></div>
 </div>
@@ -145,14 +168,22 @@ const months = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV
 const vaccineSelect = document.getElementById('vaccineSelect');
 const yearSelect = document.getElementById('yearSelect');
 const monthSlider = document.getElementById('monthSlider');
-const progressSlider = document.getElementById('progressSlider');
+const doseSlider = document.getElementById('doseSlider');
 const dateLabel = document.getElementById('dateLabel');
-const progressLabel = document.getElementById('progressLabel');
+const doseLabel = document.getElementById('doseLabel');
 
 const countrySelect = document.getElementById('countrySelect');
 const admin1Select = document.getElementById('admin1Select');
 const admin2Select = document.getElementById('admin2Select');
 const focusSelect = document.getElementById('focusSelect');
+
+function cleanText(value) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function formatNumber(value) {
+  return Number(value || 0).toLocaleString();
+}
 
 function getID(p) {
   return String(p.ID ?? p.id ?? p.Id);
@@ -191,21 +222,33 @@ function selectedDate() {
   return dates[0];
 }
 
-function getColorByProgress(progress) {
-  return progress >= 0.85 ? '#006837' :
-         progress >= 0.65 ? '#31a354' :
-         progress >= 0.45 ? '#78c679' :
-         progress >= 0.30 ? '#fecc5c' :
-         progress >= 0.15 ? '#fd8d3c' :
-         progress >  0    ? '#f03b20' :
-                             '#bd0026';
+function getColorByCumulative(value, maxValue) {
+  if (!value || value <= 0) return '#bd0026';
+
+  const pct = value / maxValue;
+
+  return pct >= 0.85 ? '#006837' :
+         pct >= 0.65 ? '#31a354' :
+         pct >= 0.45 ? '#78c679' :
+         pct >= 0.30 ? '#fecc5c' :
+         pct >= 0.15 ? '#fd8d3c' :
+         pct >  0    ? '#f03b20' :
+                        '#bd0026';
 }
 
 function nameFromProps(p, options) {
   for (const key of options) {
     if (p[key]) return p[key];
   }
-  return null;
+  return '';
+}
+
+function getCountryNameFromAdm0(p) {
+  return nameFromProps(p, ['Country','country','ADM0_NAME','NAME_0','admin0Name','adm0Name']);
+}
+
+function getAdm1NameFromBoundary(p) {
+  return nameFromProps(p, ['adm1Name','Adm1','Admin1','ADM1_NAME','NAME_1']);
 }
 
 function cumulativeForFocus(id, vaccine, date) {
@@ -218,51 +261,22 @@ function cumulativeForFocus(id, vaccine, date) {
     .reduce((sum, r) => sum + doseValue(r), 0);
 }
 
-function finalForFocus(id, vaccine) {
-  return doseRows
-    .filter(r =>
-      String(r.ID || r.id) === String(id) &&
-      r['Vaccine Type'] === vaccine
-    )
-    .reduce((sum, r) => sum + doseValue(r), 0);
-}
-
 function cumulativeForCountry(country, vaccine, date) {
   return doseRows
     .filter(r =>
-      r.Country === country &&
+      cleanText(r.Country) === cleanText(country) &&
       r['Vaccine Type'] === vaccine &&
       parseDate(r.real_date) <= parseDate(date)
     )
     .reduce((sum, r) => sum + doseValue(r), 0);
 }
 
-function finalForCountry(country, vaccine) {
+function cumulativeForAdmin1(adm1, vaccine, date) {
   return doseRows
     .filter(r =>
-      r.Country === country &&
-      r['Vaccine Type'] === vaccine
-    )
-    .reduce((sum, r) => sum + doseValue(r), 0);
-}
-
-function cumulativeForAdmin1(country, Adm1, vaccine, date) {
-  return doseRows
-    .filter(r =>
-      r.Country === country &&
-      r.Adm1 === Adm1 &&
+      cleanText(r.Adm1) === cleanText(adm1) &&
       r['Vaccine Type'] === vaccine &&
       parseDate(r.real_date) <= parseDate(date)
-    )
-    .reduce((sum, r) => sum + doseValue(r), 0);
-}
-
-function finalForAdmin1(country, Adm1, vaccine) {
-  return doseRows
-    .filter(r =>
-      r.Country === country &&
-      r.Adm1 === Adm1 &&
-      r['Vaccine Type'] === vaccine
     )
     .reduce((sum, r) => sum + doseValue(r), 0);
 }
@@ -279,9 +293,9 @@ function drawOutlines() {
     interactive: false,
     style: {
       color: '#999999',
-      weight: 0.8,
+      weight: 0.6,
       fillColor: '#d9d9d9',
-      fillOpacity: 0.35
+      fillOpacity: 0.12
     }
   }).addTo(map);
 
@@ -289,7 +303,7 @@ function drawOutlines() {
     interactive: false,
     style: {
       color: '#222222',
-      weight: 1.8,
+      weight: 1.5,
       fillColor: '#ffffff',
       fillOpacity: 0
     }
@@ -298,30 +312,30 @@ function drawOutlines() {
   adm1Outline.bringToFront();
   adm0Outline.bringToFront();
 
-  if (activeLayer) {
-    activeLayer.bringToFront();
-  }
+  if (activeLayer) activeLayer.bringToFront();
 
   adm1Outline.bringToFront();
   adm0Outline.bringToFront();
 }
 
-function filteredFocusFeatures(date) {
-  const minProgress = Number(progressSlider.value) / 100;
+function getFocusRecordByID(id) {
+  return doseRows.find(r => String(r.ID || r.id) === String(id));
+}
+
+function getFilteredFocusFeatures(date) {
   const vaccine = selectedVaccine();
+  const minDose = Number(doseSlider.value);
 
   return focusBoundaryData.features.filter(feature => {
     const p = feature.properties;
     const id = getID(p);
-    const cumulative = cumulativeForFocus(id, vaccine, date);
-    const finalTotal = finalForFocus(id, vaccine);
-    const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
-
-    const matchingRecord = doseRows.find(r => String(r.ID || r.id) === String(id));
+    const matchingRecord = getFocusRecordByID(id);
 
     if (!matchingRecord) return false;
 
-    return progress >= minProgress &&
+    const cumulative = cumulativeForFocus(id, vaccine, date);
+
+    return cumulative >= minDose &&
       (countrySelect.value === 'All' || matchingRecord.Country === countrySelect.value) &&
       (admin1Select.value === 'All' || matchingRecord.Adm1 === admin1Select.value) &&
       (admin2Select.value === 'All' || matchingRecord.Adm2 === admin2Select.value) &&
@@ -329,12 +343,58 @@ function filteredFocusFeatures(date) {
   });
 }
 
+function getMaxFocusCumulative(date, vaccine) {
+  let maxValue = 0;
+
+  focusBoundaryData.features.forEach(feature => {
+    const id = getID(feature.properties);
+    const value = cumulativeForFocus(id, vaccine, date);
+    if (value > maxValue) maxValue = value;
+  });
+
+  return maxValue || 1;
+}
+
+function getMaxCountryCumulative(date, vaccine) {
+  let maxValue = 0;
+
+  adm0Data.features.forEach(feature => {
+    const country = getCountryNameFromAdm0(feature.properties);
+    const value = cumulativeForCountry(country, vaccine, date);
+    if (value > maxValue) maxValue = value;
+  });
+
+  return maxValue || 1;
+}
+
+function getMaxAdm1Cumulative(date, vaccine) {
+  let maxValue = 0;
+
+  adm1Data.features.forEach(feature => {
+    const adm1 = getAdm1NameFromBoundary(feature.properties);
+    const value = cumulativeForAdmin1(adm1, vaccine, date);
+    if (value > maxValue) maxValue = value;
+  });
+
+  return maxValue || 1;
+}
+
+function updateDoseSliderMax(maxValue) {
+  const currentValue = Number(doseSlider.value);
+  doseSlider.max = Math.ceil(maxValue);
+
+  if (currentValue > maxValue) {
+    doseSlider.value = 0;
+  }
+
+  doseLabel.innerHTML = '<b>Minimum cumulative doses shown:</b> ' + formatNumber(doseSlider.value);
+}
+
 function updateMap() {
   clearActiveLayer();
 
   const date = selectedDate();
   const vaccine = selectedVaccine();
-  const minProgress = Number(progressSlider.value) / 100;
 
   if (!date || !vaccine) {
     dateLabel.innerHTML = '<b>Month:</b> No data';
@@ -342,38 +402,36 @@ function updateMap() {
   }
 
   dateLabel.innerHTML = '<b>Month:</b> ' + shortDate(date);
-  progressLabel.innerHTML = '<b>Minimum progress shown:</b> ' + progressSlider.value + '%';
 
   if (currentLevel === 'adm0') {
+    const maxValue = getMaxCountryCumulative(date, vaccine);
+    updateDoseSliderMax(maxValue);
+    const minDose = Number(doseSlider.value);
+
     activeLayer = L.geoJSON(adm0Data, {
       style: feature => {
-        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+        const countryName = getCountryNameFromAdm0(feature.properties);
         const cumulative = cumulativeForCountry(countryName, vaccine, date);
-        const finalTotal = finalForCountry(countryName, vaccine);
-        const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
 
         return {
-          fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
-          color: '#777',
-          weight: 0.65,
-          fillOpacity: progress >= minProgress ? 0.72 : 0.08
+          fillColor: cumulative >= minDose ? getColorByCumulative(cumulative, maxValue) : '#eeeeee',
+          color: '#555',
+          weight: 0.8,
+          fillOpacity: cumulative >= minDose ? 0.72 : 0.08
         };
       },
 
       onEachFeature: (feature, layer) => {
-        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+        const countryName = getCountryNameFromAdm0(feature.properties);
 
         layer.on('mouseover', function () {
           const cumulative = cumulativeForCountry(countryName, vaccine, date);
-          const finalTotal = finalForCountry(countryName, vaccine);
-          const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
 
           layer.bindPopup(
             `<b>${countryName}</b><br>
             Level: ADM0<br>
             Antigen: ${vaccine}<br>
-            Cumulative doses: ${cumulative}<br>
-            Progress: ${progress}%<br>
+            Cumulative doses: ${formatNumber(cumulative)}<br>
             Month: ${shortDate(date)}`
           ).openPopup();
 
@@ -396,39 +454,35 @@ function updateMap() {
     return;
   }
 
-  if (currentLevel === 'Adm1') {
+  if (currentLevel === 'adm1') {
+    const maxValue = getMaxAdm1Cumulative(date, vaccine);
+    updateDoseSliderMax(maxValue);
+    const minDose = Number(doseSlider.value);
+
     activeLayer = L.geoJSON(adm1Data, {
       style: feature => {
-        const admin1Name = nameFromProps(feature.properties, ['Adm1','Admin1','Adm1_NAME','NAME_1']);
-        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
-        const cumulative = cumulativeForAdmin1(countryName, admin1Name, vaccine, date);
-        const finalTotal = finalForAdmin1(countryName, admin1Name, vaccine);
-        const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
+        const admin1Name = getAdm1NameFromBoundary(feature.properties);
+        const cumulative = cumulativeForAdmin1(admin1Name, vaccine, date);
 
         return {
-          fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
-          color: '#777',
-          weight: 0.45,
-          fillOpacity: progress >= minProgress ? 0.72 : 0.08
+          fillColor: cumulative >= minDose ? getColorByCumulative(cumulative, maxValue) : '#eeeeee',
+          color: '#555',
+          weight: 0.6,
+          fillOpacity: cumulative >= minDose ? 0.72 : 0.08
         };
       },
 
       onEachFeature: (feature, layer) => {
-        const admin1Name = nameFromProps(feature.properties, ['Adm1','Admin1','Adm1_NAME','NAME_1']);
-        const countryName = nameFromProps(feature.properties, ['Country','ADM0_NAME','NAME_0']);
+        const admin1Name = getAdm1NameFromBoundary(feature.properties);
 
         layer.on('mouseover', function () {
-          const cumulative = cumulativeForAdmin1(countryName, admin1Name, vaccine, date);
-          const finalTotal = finalForAdmin1(countryName, admin1Name, vaccine);
-          const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
+          const cumulative = cumulativeForAdmin1(admin1Name, vaccine, date);
 
           layer.bindPopup(
             `<b>${admin1Name}</b><br>
-            Level: Adm1<br>
-            Country: ${countryName}<br>
+            Level: ADM1<br>
             Antigen: ${vaccine}<br>
-            Cumulative doses: ${cumulative}<br>
-            Progress: ${progress}%<br>
+            Cumulative doses: ${formatNumber(cumulative)}<br>
             Month: ${shortDate(date)}`
           ).openPopup();
 
@@ -441,7 +495,7 @@ function updateMap() {
         });
 
         layer.on('click', function () {
-          drawAdmin1Chart(countryName, admin1Name, vaccine);
+          drawAdmin1Chart(admin1Name, vaccine);
         });
       }
     }).addTo(map);
@@ -451,32 +505,31 @@ function updateMap() {
     return;
   }
 
-  activeLayer = L.geoJSON(filteredFocusFeatures(date), {
+  const maxValue = getMaxFocusCumulative(date, vaccine);
+  updateDoseSliderMax(maxValue);
+  const minDose = Number(doseSlider.value);
+
+  activeLayer = L.geoJSON(getFilteredFocusFeatures(date), {
     style: feature => {
       const p = feature.properties;
       const id = getID(p);
       const cumulative = cumulativeForFocus(id, vaccine, date);
-      const finalTotal = finalForFocus(id, vaccine);
-      const progress = finalTotal > 0 ? cumulative / finalTotal : 0;
 
       return {
-        fillColor: progress >= minProgress ? getColorByProgress(progress) : '#eeeeee',
+        fillColor: cumulative >= minDose ? getColorByCumulative(cumulative, maxValue) : '#eeeeee',
         color: 'white',
         weight: 0.45,
-        fillOpacity: progress >= minProgress ? 0.76 : 0.08
+        fillOpacity: cumulative >= minDose ? 0.76 : 0.08
       };
     },
 
     onEachFeature: (feature, layer) => {
       const p = feature.properties;
       const id = getID(p);
-
-      const matchingRecord = doseRows.find(r => String(r.ID || r.id) === String(id));
+      const matchingRecord = getFocusRecordByID(id);
 
       layer.on('mouseover', function () {
         const cumulative = cumulativeForFocus(id, vaccine, date);
-        const finalTotal = finalForFocus(id, vaccine);
-        const progress = finalTotal > 0 ? ((cumulative / finalTotal) * 100).toFixed(1) : 0;
 
         layer.bindPopup(
           `<b>${matchingRecord?.['Focus Area'] || p['Focus Area'] || p.Focus_Area || 'Focus Area'}</b><br>
@@ -485,8 +538,7 @@ function updateMap() {
           Admin1: ${matchingRecord?.Adm1 || ''}<br>
           Admin2: ${matchingRecord?.Adm2 || ''}<br>
           Antigen: ${vaccine}<br>
-          Cumulative doses: ${cumulative}<br>
-          Progress: ${progress}%<br>
+          Cumulative doses: ${formatNumber(cumulative)}<br>
           Month: ${shortDate(date)}`
         ).openPopup();
 
@@ -525,7 +577,9 @@ function populateDropdowns() {
   updateAdmin2Dropdown();
   updateFocusDropdown();
 
-  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))]
+    .filter(Boolean)
+    .sort();
 
   years.forEach(y => yearSelect.innerHTML += `<option value="${y}">${y}</option>`);
   yearSelect.value = years[0];
@@ -572,7 +626,9 @@ function updateFocusDropdown() {
 }
 
 function yearlyFocusValues(id, vaccine) {
-  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))]
+    .filter(Boolean)
+    .sort();
 
   return years.map(year => {
     const endDate = new Date(year, 11, 31);
@@ -590,7 +646,9 @@ function yearlyFocusValues(id, vaccine) {
 }
 
 function yearlyCountryValues(country, vaccine) {
-  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))]
+    .filter(Boolean)
+    .sort();
 
   return years.map(year => {
     const endDate = new Date(year, 11, 31);
@@ -598,12 +656,14 @@ function yearlyCountryValues(country, vaccine) {
   });
 }
 
-function yearlyAdmin1Values(country, Adm1, vaccine) {
-  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))].filter(Boolean).sort();
+function yearlyAdmin1Values(adm1, vaccine) {
+  const years = [...new Set(doseRows.map(r => parseDate(r.real_date).getFullYear()))]
+    .filter(Boolean)
+    .sort();
 
   return years.map(year => {
     const endDate = new Date(year, 11, 31);
-    return { year, total: cumulativeForAdmin1(country, Adm1, vaccine, endDate) };
+    return { year, total: cumulativeForAdmin1(adm1, vaccine, endDate) };
   });
 }
 
@@ -617,9 +677,9 @@ function drawCountryChart(country, vaccine) {
   drawChart(country + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
 }
 
-function drawAdmin1Chart(country, Adm1, vaccine) {
-  const values = yearlyAdmin1Values(country, Adm1, vaccine);
-  drawChart(Adm1 + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
+function drawAdmin1Chart(adm1, vaccine) {
+  const values = yearlyAdmin1Values(adm1, vaccine);
+  drawChart(adm1 + ' - ' + vaccine + ' Cumulative Trend', values.map(v => v.year), values.map(v => v.total));
 }
 
 function drawChart(title, labels, values) {
@@ -656,57 +716,57 @@ function setLevel(level) {
   document.querySelectorAll('.button-row button').forEach(b => b.classList.remove('active'));
 
   if (level === 'adm0') document.getElementById('btnAdm0').classList.add('active');
-  if (level === 'Adm1') document.getElementById('btnAdm1').classList.add('active');
+  if (level === 'adm1') document.getElementById('btnAdm1').classList.add('active');
   if (level === 'focus') document.getElementById('btnFocus').classList.add('active');
 
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 }
 
 document.getElementById('btnAdm0').onclick = () => setLevel('adm0');
-document.getElementById('btnAdm1').onclick = () => setLevel('Adm1');
+document.getElementById('btnAdm1').onclick = () => setLevel('adm1');
 document.getElementById('btnFocus').onclick = () => setLevel('focus');
 
 vaccineSelect.onchange = () => {
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
 yearSelect.onchange = () => {
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
 monthSlider.oninput = () => {
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
-progressSlider.oninput = updateMap;
+doseSlider.oninput = updateMap;
 
 countrySelect.onchange = () => {
   updateAdmin1Dropdown();
   updateAdmin2Dropdown();
   updateFocusDropdown();
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
 admin1Select.onchange = () => {
   updateAdmin2Dropdown();
   updateFocusDropdown();
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
 admin2Select.onchange = () => {
   updateFocusDropdown();
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
 focusSelect.onchange = () => {
-  progressSlider.value = 0;
+  doseSlider.value = 0;
   updateMap();
 };
 
@@ -715,9 +775,9 @@ Promise.all([
   fetch('Adm1.geojson').then(r => r.json()),
   fetch('FocusArea.geojson').then(r => r.json()),
   fetch('all_doses_long.csv').then(r => r.text())
-]).then(([adm0, Adm1, focusBoundaries, csvText]) => {
+]).then(([adm0, adm1, focusBoundaries, csvText]) => {
   adm0Data = adm0;
-  adm1Data = Adm1;
+  adm1Data = adm1;
   focusBoundaryData = focusBoundaries;
 
   doseRows = Papa.parse(csvText, {
